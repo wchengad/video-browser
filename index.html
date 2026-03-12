@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Video Analysis Browser (Static)</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="page-head">
+    <h1>Video Analysis Browser (Static)</h1>
+    <p>读取 index.json 并在静态网页中浏览分段、关键词时间轴与文本定位</p>
+  </div>
+
+  <section class="source-panel">
+    <div class="source-grid">
+      <div class="source-block">
+        <h2>1) 数据源（index.json）</h2>
+        <div class="row">
+          <input id="indexFileInput" type="file" accept=".json,application/json" />
+          <button id="loadIndexFileBtn">读取 JSON 文件</button>
+        </div>
+        <div class="row">
+          <input id="indexUrlInput" type="text" placeholder="或输入 index.json 的 URL（同源可访问）" />
+          <button id="loadIndexUrlBtn" class="secondary">从 URL 读取</button>
+        </div>
+        <div class="row">
+          <input id="assetFolderInput" type="file" webkitdirectory directory multiple />
+          <button id="bindAssetsBtn" class="secondary">绑定资源目录（可选）</button>
+        </div>
+        <p class="muted">提示：如果通过文件上传 index.json，浏览器无法自动读同目录图片。可用“绑定资源目录”补齐帧图预览。</p>
+      </div>
+
+      <div class="source-block">
+        <h2>2) 视频源</h2>
+        <div class="row">
+          <input id="videoFileInput" type="file" accept="video/*" />
+          <button id="useVideoFileBtn">使用本地视频</button>
+        </div>
+        <div class="row">
+          <input id="videoUrlInput" type="text" placeholder="粘贴视频链接（YouTube/B站/抖音/快手/直链 mp4 等）" />
+          <button id="useVideoUrlBtn" class="secondary">使用链接</button>
+        </div>
+        <p id="videoSourceInfo" class="muted">未设置视频源</p>
+        <div id="videoActionBar" class="video-action-bar"></div>
+      </div>
+    </div>
+    <div id="statusLine" class="status">等待加载 index.json</div>
+  </section>
+
+  <div class="wrap">
+    <section class="panel">
+      <h2 class="title">播放器与搜索</h2>
+      <p class="sub" id="metaLine">加载中...</p>
+
+      <div id="videoHost" class="video-host">
+        <video id="player" controls preload="metadata"></video>
+        <iframe id="embedPlayer" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+      </div>
+
+      <div class="toolbar">
+        <input id="queryInput" type="text" placeholder="输入文本定位片段，例如：手机 / 奶茶 / 争吵" />
+        <button id="searchBtn">文本定位</button>
+        <button id="resetBtn" class="secondary">清空定位</button>
+      </div>
+      <div id="searchInfo" class="muted">可点击右侧关键词快速定位</div>
+      <div id="searchDebug" class="muted" style="margin-top:4px;"></div>
+    </section>
+
+    <section class="panel">
+      <h2 class="title">关键词与命中</h2>
+      <p class="sub">点击关键词触发文本定位，点击时间跳转全局时间戳</p>
+      <div id="globalKeywordList" class="card scrollbox"></div>
+      <div id="resultList" class="list split-list"></div>
+    </section>
+
+    <section class="panel">
+      <h2 class="title">分段详情</h2>
+      <p class="sub">点击分段或分段内时间标签可直接跳转播放</p>
+      <div id="segmentList" class="list"></div>
+    </section>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
