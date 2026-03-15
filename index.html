@@ -13,9 +13,17 @@
   </div>
 
   <section class="source-panel">
+    <div class="source-headline">
+      <div id="sourceQuickState" class="muted source-quick-state">数据源：未加载 ｜ 视频源：未设置</div>
+      <button id="toggleSourcePanelBtn" class="secondary tiny-btn">收起面板</button>
+    </div>
     <div class="source-grid">
-      <div class="source-block">
-        <h2>1) 数据源（index.json）</h2>
+      <div class="source-block" id="dataSourceBlock">
+        <div class="source-block-head">
+          <h2>1) 数据源（index.json）</h2>
+          <button id="toggleDataSourceBtn" class="secondary tiny-btn">收起</button>
+        </div>
+        <div class="source-block-body">
         <div class="row">
           <input id="indexFileInput" type="file" accept=".json,application/json" />
           <button id="loadIndexFileBtn">读取 JSON 文件</button>
@@ -29,10 +37,15 @@
           <button id="bindAssetsBtn" class="secondary">绑定资源目录（可选）</button>
         </div>
         <p class="muted">提示：如果通过文件上传 index.json，浏览器无法自动读同目录图片。可用“绑定资源目录”补齐帧图预览。</p>
+        </div>
       </div>
 
-      <div class="source-block">
-        <h2>2) 视频源</h2>
+      <div class="source-block" id="videoSourceBlock">
+        <div class="source-block-head">
+          <h2>2) 视频源</h2>
+          <button id="toggleVideoSourceBtn" class="secondary tiny-btn">收起</button>
+        </div>
+        <div class="source-block-body">
         <div class="row">
           <input id="videoFileInput" type="file" accept="video/*" />
           <button id="useVideoFileBtn">使用本地视频</button>
@@ -43,6 +56,7 @@
         </div>
         <p id="videoSourceInfo" class="muted">未设置视频源</p>
         <div id="videoActionBar" class="video-action-bar"></div>
+        </div>
       </div>
     </div>
     <div id="statusLine" class="status">等待加载 index.json</div>
@@ -63,6 +77,17 @@
         <button id="searchBtn">文本定位</button>
         <button id="resetBtn" class="secondary">清空定位</button>
       </div>
+      <div class="filterbar">
+        <select id="shotSizeFilter"></select>
+        <select id="cameraMovementFilter"></select>
+        <select id="defectFilter">
+          <option value="all">缺陷筛选：全部</option>
+          <option value="no_defect">仅无缺陷</option>
+          <option value="has_defect">仅有缺陷</option>
+        </select>
+        <button id="clearFilterBtn" class="secondary tiny-btn">清空筛选</button>
+      </div>
+      <div id="filterInfo" class="muted"></div>
       <div id="searchInfo" class="muted">可点击右侧关键词快速定位</div>
       <div id="searchDebug" class="muted" style="margin-top:4px;"></div>
     </section>

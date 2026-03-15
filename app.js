@@ -4,6 +4,13 @@ const state = {
   indexBaseUrl: "",
   bundle: null,
   hitIds: new Set(),
+  lastQuery: "",
+  lastResults: [],
+  filters: {
+    shot_size: "",
+    camera_movement: "",
+    defect: "all",
+  },
   assetUrls: new Map(),
   assetSuffixUrls: [],
   ownedObjectUrls: [],
@@ -11,6 +18,11 @@ const state = {
   playerMode: "none", // none | html5 | embed
   embedKind: "",
   embedBaseUrl: "",
+  ui: {
+    indexReady: false,
+    videoReady: false,
+    sourcePanelCollapsed: false,
+  },
 };
 
 const statusLine = document.getElementById("statusLine");
@@ -25,9 +37,88 @@ const resultList = document.getElementById("resultList");
 const searchInfo = document.getElementById("searchInfo");
 const searchDebug = document.getElementById("searchDebug");
 const queryInput = document.getElementById("queryInput");
+const shotSizeFilter = document.getElementById("shotSizeFilter");
+const cameraMovementFilter = document.getElementById("cameraMovementFilter");
+const defectFilter = document.getElementById("defectFilter");
+const filterInfo = document.getElementById("filterInfo");
+const sourcePanel = document.querySelector(".source-panel");
+const sourceQuickState = document.getElementById("sourceQuickState");
+const toggleSourcePanelBtn = document.getElementById("toggleSourcePanelBtn");
+const dataSourceBlock = document.getElementById("dataSourceBlock");
+const videoSourceBlock = document.getElementById("videoSourceBlock");
+const toggleDataSourceBtn = document.getElementById("toggleDataSourceBtn");
+const toggleVideoSourceBtn = document.getElementById("toggleVideoSourceBtn");
+
+const DEFAULT_SHOT_SIZE_OPTIONS = [
+  "大特写 | extreme close-up",
+  "特写 | close-up",
+  "近景 | medium close-up",
+  "中景 | medium shot",
+  "中远景 | medium long shot",
+  "全景 | full shot",
+  "远景 | long shot",
+  "大远景 | extreme long shot",
+  "未知 | unknown",
+];
+
+const DEFAULT_CAMERA_MOVEMENT_OPTIONS = [
+  "固定镜头 | static",
+  "平移 | pan",
+  "俯仰 | tilt",
+  "推镜 | dolly in",
+  "拉镜 | dolly out",
+  "跟拍 | tracking shot",
+  "变焦 | zoom",
+  "手持 | handheld",
+  "旋转 | roll",
+  "航拍移动 | aerial move",
+  "未知 | unknown",
+];
 
 function setStatus(text) {
   statusLine.textContent = String(text || "");
+}
+
+function setBlockCollapsed(blockEl, btnEl, collapsed) {
+  if (!blockEl) return;
+  blockEl.classList.toggle("collapsed", Boolean(collapsed));
+  if (btnEl) {
+    btnEl.textContent = collapsed ? "展开" : "收起";
+  }
+}
+
+function setSourcePanelCollapsed(collapsed) {
+  const next = Boolean(collapsed);
+  state.ui.sourcePanelCollapsed = next;
+  if (sourcePanel) {
+    sourcePanel.classList.toggle("collapsed", next);
+  }
+  if (toggleSourcePanelBtn) {
+    toggleSourcePanelBtn.textContent = next ? "展开面板" : "收起面板";
+  }
+}
+
+function updateSourceQuickState() {
+  if (!sourceQuickState) return;
+  const dataText = state.ui.indexReady ? "数据源：已加载" : "数据源：未加载";
+  const videoText = state.ui.videoReady ? "视频源：已设置" : "视频源：未设置";
+  sourceQuickState.textContent = `${dataText} ｜ ${videoText}`;
+}
+
+function markIndexReady(ready) {
+  state.ui.indexReady = Boolean(ready);
+  updateSourceQuickState();
+  if (state.ui.indexReady && state.ui.videoReady) {
+    setSourcePanelCollapsed(true);
+  }
+}
+
+function markVideoReady(ready) {
+  state.ui.videoReady = Boolean(ready);
+  updateSourceQuickState();
+  if (state.ui.indexReady && state.ui.videoReady) {
+    setSourcePanelCollapsed(true);
+  }
 }
 
 function escapeHtml(v) {
@@ -121,6 +212,7 @@ function setHtml5VideoSource(url, hint) {
   state.embedBaseUrl = "";
   clearVideoAction();
   videoSourceInfo.textContent = hint || "使用 HTML5 视频源";
+  markVideoReady(true);
 }
 
 function setEmbedSource(embedUrl, kind, hint) {
@@ -130,6 +222,7 @@ function setEmbedSource(embedUrl, kind, hint) {
   state.embedBaseUrl = embedUrl;
   clearVideoAction();
   videoSourceInfo.textContent = hint || "使用嵌入播放器";
+  markVideoReady(true);
 }
 
 function setExternalOnlySource(url, platformName) {
@@ -139,6 +232,7 @@ function setExternalOnlySource(url, platformName) {
   const pname = platformName || "该平台";
   videoSourceInfo.textContent = `${pname}限制外站 iframe，无法在当前页面内嵌播放`;
   setVideoActionLink(url, `在新标签页打开${pname}视频`);
+  markVideoReady(true);
 }
 
 function parseYoutubeId(raw) {
@@ -317,15 +411,150 @@ function expandTerms(terms) {
   return out;
 }
 
+function listify(v) {
+  if (Array.isArray(v)) return v.map((x) => String(x || "").trim()).filter(Boolean);
+  const s = String(v || "").trim();
+  return s ? [s] : [];
+}
+
+function dedupStrings(items) {
+  const out = [];
+  const seen = new Set();
+  for (const item of items || []) {
+    const key = String(item || "").trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+function setupTaxonomyFilters() {
+  if (!shotSizeFilter || !cameraMovementFilter || !defectFilter) return;
+
+  const tax = (state.bundle && state.bundle.taxonomies) || {};
+  const segs = (state.bundle && state.bundle.segments) || [];
+
+  const shotTax = dedupStrings(listify(tax.shot_size));
+  const moveTax = dedupStrings(listify(tax.camera_movements));
+  const observedShots = dedupStrings(segs.map((s) => s.shot_size));
+  const observedMoves = dedupStrings(segs.flatMap((s) => listify(s.camera_movements)));
+
+  const shotOptions = dedupStrings([
+    ...(shotTax.length ? shotTax : DEFAULT_SHOT_SIZE_OPTIONS),
+    ...observedShots,
+  ]);
+  const movementOptions = dedupStrings([
+    ...(moveTax.length ? moveTax : DEFAULT_CAMERA_MOVEMENT_OPTIONS),
+    ...observedMoves,
+  ]);
+
+  shotSizeFilter.innerHTML = "";
+  cameraMovementFilter.innerHTML = "";
+
+  const shotAll = document.createElement("option");
+  shotAll.value = "";
+  shotAll.textContent = "镜头景别：全部";
+  shotSizeFilter.appendChild(shotAll);
+  for (const opt of shotOptions) {
+    const el = document.createElement("option");
+    el.value = opt;
+    el.textContent = opt;
+    shotSizeFilter.appendChild(el);
+  }
+
+  const moveAll = document.createElement("option");
+  moveAll.value = "";
+  moveAll.textContent = "镜头运动：全部";
+  cameraMovementFilter.appendChild(moveAll);
+  for (const opt of movementOptions) {
+    const el = document.createElement("option");
+    el.value = opt;
+    el.textContent = opt;
+    cameraMovementFilter.appendChild(el);
+  }
+
+  shotSizeFilter.value = state.filters.shot_size || "";
+  cameraMovementFilter.value = state.filters.camera_movement || "";
+  defectFilter.value = state.filters.defect || "all";
+}
+
+function passFilters(seg) {
+  const shotFilter = state.filters.shot_size || "";
+  const moveFilter = state.filters.camera_movement || "";
+  const defectFilterMode = state.filters.defect || "all";
+  if (shotFilter && String(seg.shot_size || "").trim() !== shotFilter) return false;
+  if (moveFilter && !listify(seg.camera_movements).includes(moveFilter)) return false;
+  const defect = seg.defect || {};
+  const hasDefect = Boolean(defect.has_defect);
+  if (defectFilterMode === "has_defect" && !hasDefect) return false;
+  if (defectFilterMode === "no_defect" && hasDefect) return false;
+  return true;
+}
+
+function formatDefect(seg) {
+  const defect = seg && seg.defect ? seg.defect : {};
+  const hasDefect = Boolean(defect.has_defect);
+  const defectTypes = listify(defect.defect_types);
+  if (!hasDefect) return { text: "无缺陷", className: "defect-ok" };
+  return {
+    text: `存在缺陷${defectTypes.length ? `：${defectTypes.join(" / ")}` : ""}`,
+    className: "defect-bad",
+  };
+}
+
+function normalizeSoundEvents(events) {
+  const rows = Array.isArray(events) ? events : [];
+  const out = [];
+  for (const item of rows) {
+    if (!item || typeof item !== "object") continue;
+    const eventType = String(item.event_type || item.type || "").trim();
+    if (!eventType) continue;
+    const gs = Number(item.global_start_s ?? item.start_s ?? 0);
+    const ge = Number(item.global_end_s ?? item.end_s ?? gs);
+    const conf = Number(item.confidence ?? 0);
+    out.push({
+      event_type: eventType,
+      global_start_s: Number.isFinite(gs) ? gs : 0,
+      global_end_s: Number.isFinite(ge) ? ge : (Number.isFinite(gs) ? gs : 0),
+      confidence: Number.isFinite(conf) ? conf : 0,
+    });
+  }
+  out.sort((a, b) => (a.global_start_s - b.global_start_s) || String(a.event_type).localeCompare(String(b.event_type)));
+  return out;
+}
+
 function segmentText(seg) {
   const parts = [];
-  for (const key of ["summary", "asr_text"]) {
+  for (const key of ["summary", "asr_text", "asr_text_zh", "asr_text_bilingual", "asr_detected_language", "asr_language_to_zh"]) {
     const val = seg[key];
     if (typeof val === "string") parts.push(val);
   }
-  for (const key of ["events", "objects", "actions", "scene_tags", "tokens"]) {
-    const arr = seg[key];
-    if (Array.isArray(arr)) parts.push(...arr.map((x) => String(x)));
+  for (const key of ["events", "objects", "actions", "scene_tags", "scene", "subjects", "camera_movements", "emotion_tags", "tokens"]) {
+    parts.push(...listify(seg[key]));
+  }
+  const shotSize = seg.shot_size;
+  if (typeof shotSize === "string" && shotSize.trim()) {
+    parts.push(shotSize);
+  }
+  const defect = seg.defect;
+  if (defect && typeof defect === "object") {
+    if (defect.has_defect) {
+      parts.push("has_defect");
+    }
+    parts.push(...listify(defect.defect_types));
+  }
+  parts.push(Boolean(seg.audio_has_music) ? "有音乐" : "无音乐");
+  parts.push(String(seg.audio_music_ratio || ""));
+  const soundEvents = seg.sound_events;
+  if (Array.isArray(soundEvents)) {
+    for (const ev of soundEvents) {
+      if (ev && typeof ev === "object") {
+        parts.push(String(ev.event_type || ""));
+      } else {
+        parts.push(String(ev || ""));
+      }
+    }
   }
   return parts.join("\n").toLowerCase();
 }
@@ -366,11 +595,24 @@ function searchSegments(indexObj, query, topK) {
         global_start_s: seg.global_start_s,
         global_end_s: seg.global_end_s,
         summary: seg.summary || "",
-        events: seg.events || [],
-        objects: seg.objects || [],
-        actions: seg.actions || [],
-        scene_tags: seg.scene_tags || [],
+        events: listify(seg.events),
+        objects: listify(seg.objects),
+        actions: listify(seg.actions),
+        scene_tags: listify(seg.scene_tags),
+        scene: listify(seg.scene || seg.scene_tags),
+        subjects: listify(seg.subjects || seg.objects),
+        shot_size: seg.shot_size || "未知 | unknown",
+        camera_movements: listify(seg.camera_movements || ["未知 | unknown"]),
+        emotion_tags: listify(seg.emotion_tags),
+        defect: seg.defect || { has_defect: false, defect_types: [] },
         asr_text: seg.asr_text || "",
+        asr_text_zh: seg.asr_text_zh || "",
+        asr_text_bilingual: seg.asr_text_bilingual || "",
+        asr_detected_language: seg.asr_detected_language || "unknown",
+        asr_language_to_zh: seg.asr_language_to_zh || "",
+        audio_music_ratio: seg.audio_music_ratio || 0,
+        audio_has_music: Boolean(seg.audio_has_music),
+        sound_events: seg.sound_events || [],
         score: Number(score.toFixed(4)),
         hit_type: "segment",
         matched_keyword: "",
@@ -403,11 +645,24 @@ function searchSegments(indexObj, query, topK) {
         global_start_s: kw.global_start_s ?? seg.global_start_s,
         global_end_s: kw.global_end_s ?? seg.global_end_s,
         summary: seg.summary || "",
-        events: seg.events || [],
-        objects: seg.objects || [],
-        actions: seg.actions || [],
-        scene_tags: seg.scene_tags || [],
+        events: listify(seg.events),
+        objects: listify(seg.objects),
+        actions: listify(seg.actions),
+        scene_tags: listify(seg.scene_tags),
+        scene: listify(seg.scene || seg.scene_tags),
+        subjects: listify(seg.subjects || seg.objects),
+        shot_size: seg.shot_size || "未知 | unknown",
+        camera_movements: listify(seg.camera_movements || ["未知 | unknown"]),
+        emotion_tags: listify(seg.emotion_tags),
+        defect: seg.defect || { has_defect: false, defect_types: [] },
         asr_text: seg.asr_text || "",
+        asr_text_zh: seg.asr_text_zh || "",
+        asr_text_bilingual: seg.asr_text_bilingual || "",
+        asr_detected_language: seg.asr_detected_language || "unknown",
+        asr_language_to_zh: seg.asr_language_to_zh || "",
+        audio_music_ratio: seg.audio_music_ratio || 0,
+        audio_has_music: Boolean(seg.audio_has_music),
+        sound_events: seg.sound_events || [],
         score: Number(kwScore.toFixed(4)),
         hit_type: "keyword_timeline",
         matched_keyword: kw.keyword || "",
@@ -520,25 +775,54 @@ function buildKeywordIndex(indexObj) {
 
 function buildBundle(indexObj) {
   const video = indexObj.video || {};
-  const segments = (indexObj.segments || []).map((seg) => ({
-    segment_id: seg.segment_id,
-    chunk_id: seg.chunk_id,
-    global_start_s: seg.global_start_s,
-    global_end_s: seg.global_end_s,
-    duration_s: seg.duration_s,
-    summary: seg.summary || "",
-    asr_text: seg.asr_text || "",
-    events: seg.events || [],
-    objects: seg.objects || [],
-    actions: seg.actions || [],
-    scene_tags: seg.scene_tags || [],
-    confidence: seg.confidence,
-    quality: seg.quality || {},
-    frame_paths: seg.frame_paths || [],
-    frame_urls: (seg.frame_paths || []).map(resolveFrameUrl).filter(Boolean),
-    keyword_timeline: seg.keyword_timeline || [],
-    tokens: seg.tokens || [],
-  }));
+  const taxonomies = (indexObj && typeof indexObj.taxonomies === "object" && indexObj.taxonomies) || {};
+  const segments = (indexObj.segments || []).map((seg) => {
+    const defectRaw = seg.defect;
+    let defectTypes = [];
+    let hasDefect = false;
+    if (defectRaw && typeof defectRaw === "object") {
+      hasDefect = Boolean(defectRaw.has_defect);
+      defectTypes = listify(defectRaw.defect_types);
+    }
+    if (defectTypes.length && !hasDefect) hasDefect = true;
+    if (!hasDefect) defectTypes = [];
+
+    return {
+      segment_id: seg.segment_id,
+      chunk_id: seg.chunk_id,
+      global_start_s: seg.global_start_s,
+      global_end_s: seg.global_end_s,
+      duration_s: seg.duration_s,
+      summary: seg.summary || "",
+      asr_text: seg.asr_text || "",
+      asr_text_zh: seg.asr_text_zh || "",
+      asr_text_bilingual: seg.asr_text_bilingual || "",
+      asr_detected_language: seg.asr_detected_language || "unknown",
+      asr_language_to_zh: seg.asr_language_to_zh || "",
+      audio_music_ratio: seg.audio_music_ratio || 0,
+      audio_has_music: Boolean(seg.audio_has_music),
+      sound_events: seg.sound_events || [],
+      events: listify(seg.events),
+      objects: listify(seg.objects),
+      actions: listify(seg.actions),
+      scene_tags: listify(seg.scene_tags),
+      scene: listify(seg.scene || seg.scene_tags),
+      subjects: listify(seg.subjects || seg.objects),
+      shot_size: seg.shot_size || "未知 | unknown",
+      camera_movements: listify(seg.camera_movements || ["未知 | unknown"]),
+      emotion_tags: listify(seg.emotion_tags),
+      defect: {
+        has_defect: hasDefect,
+        defect_types: defectTypes,
+      },
+      confidence: seg.confidence,
+      quality: seg.quality || {},
+      frame_paths: listify(seg.frame_paths),
+      frame_urls: listify(seg.frame_paths).map(resolveFrameUrl).filter(Boolean),
+      keyword_timeline: seg.keyword_timeline || [],
+      tokens: seg.tokens || [],
+    };
+  });
 
   return {
     index_path: state.indexPathHint || "(uploaded file)",
@@ -546,6 +830,11 @@ function buildBundle(indexObj) {
     video,
     stats: indexObj.stats || {},
     scene_cuts_s: indexObj.scene_cuts_s || [],
+    taxonomies: {
+      shot_size: listify(taxonomies.shot_size),
+      camera_movements: listify(taxonomies.camera_movements || taxonomies.camera_movement),
+      sound_events: listify(taxonomies.sound_events),
+    },
     segments,
     keyword_index: buildKeywordIndex(indexObj),
   };
@@ -553,9 +842,25 @@ function buildBundle(indexObj) {
 
 function renderSegments() {
   const segs = (state.bundle && state.bundle.segments) || [];
-  segmentList.innerHTML = "";
+  const filtered = segs.filter(passFilters);
+  const activeFilters = [];
+  if (state.filters.shot_size) activeFilters.push(`景别=${state.filters.shot_size}`);
+  if (state.filters.camera_movement) activeFilters.push(`运动=${state.filters.camera_movement}`);
+  if (state.filters.defect === "has_defect") activeFilters.push("缺陷=仅有缺陷");
+  if (state.filters.defect === "no_defect") activeFilters.push("缺陷=仅无缺陷");
+  if (filterInfo) {
+    filterInfo.textContent = `分段筛选：${filtered.length}/${segs.length}${
+      activeFilters.length ? `（${activeFilters.join("，")}）` : ""
+    }`;
+  }
 
-  for (const seg of segs) {
+  segmentList.innerHTML = "";
+  if (!filtered.length) {
+    segmentList.innerHTML = '<div class="muted">当前筛选条件下无分段</div>';
+    return;
+  }
+
+  for (const seg of filtered) {
     const card = document.createElement("div");
     card.className = `card${state.hitIds.has(seg.segment_id) ? " hit" : ""}`;
     card.id = `seg_${seg.segment_id}`;
@@ -575,6 +880,45 @@ function renderSegments() {
     sum.style.marginTop = "8px";
     sum.textContent = seg.summary || "(无摘要)";
 
+    const sceneText = listify(seg.scene).join(" / ");
+    const subjectText = listify(seg.subjects).join(" / ");
+    const shotSizeText = String(seg.shot_size || "未知 | unknown");
+    const movementText = listify(seg.camera_movements).join(" / ");
+    const emotionText = listify(seg.emotion_tags).join(" / ");
+    const defectInfo = formatDefect(seg);
+    const asrLangText = String(seg.asr_detected_language || "(空)").trim();
+    const musicRatio = Number(seg.audio_music_ratio || 0);
+    const hasMusic = Boolean(seg.audio_has_music);
+    const musicText = `${hasMusic ? "是" : "否"} (${(Math.max(0, musicRatio) * 100).toFixed(1)}%)`;
+    const soundEvents = normalizeSoundEvents(seg.sound_events);
+    const soundEventText = soundEvents.length
+      ? dedupStrings(soundEvents.map((x) => x.event_type)).join(" / ")
+      : "(无)";
+
+    const visualMeta = document.createElement("div");
+    visualMeta.className = "meta-grid";
+    visualMeta.innerHTML = `
+      <div class="meta-line"><span class="meta-label">场景</span><span>${escapeHtml(sceneText || "(空)")}</span></div>
+      <div class="meta-line"><span class="meta-label">主体</span><span>${escapeHtml(subjectText || "(空)")}</span></div>
+      <div class="meta-line"><span class="meta-label">镜头景别</span><span>${escapeHtml(shotSizeText)}</span></div>
+      <div class="meta-line"><span class="meta-label">镜头运动</span><span>${escapeHtml(movementText || "(空)")}</span></div>
+      <div class="meta-line"><span class="meta-label">情绪</span><span>${escapeHtml(emotionText || "(空)")}</span></div>
+      <div class="meta-line"><span class="meta-label">缺陷</span><span class="${defectInfo.className}">${escapeHtml(defectInfo.text)}</span></div>
+    `;
+
+    const asrBi = String(seg.asr_text_bilingual || "").trim();
+    const audioMeta = document.createElement("div");
+    audioMeta.className = "meta-block";
+    audioMeta.innerHTML = `
+      <div class="meta-title">声音分析</div>
+      <div class="meta-grid" style="margin-top:0;">
+        <div class="meta-line"><span class="meta-label">ASR双语</span><span>${escapeHtml(asrBi || "(空)")}</span></div>
+        <div class="meta-line"><span class="meta-label">ASR语种</span><span>${escapeHtml(asrLangText || "(空)")}</span></div>
+        <div class="meta-line"><span class="meta-label">音乐检测</span><span>${escapeHtml(musicText)}</span></div>
+        <div class="meta-line"><span class="meta-label">声音事件</span><span>${escapeHtml(soundEventText)}</span></div>
+      </div>
+    `;
+
     const chips = document.createElement("div");
     chips.className = "chips";
     const groups = [
@@ -582,6 +926,14 @@ function renderSegments() {
       ...(seg.objects || []),
       ...(seg.actions || []),
       ...(seg.scene_tags || []),
+      ...listify(seg.scene),
+      ...listify(seg.subjects),
+      ...listify(seg.camera_movements),
+      ...listify(seg.emotion_tags),
+      ...soundEvents.map((x) => x.event_type),
+      ...listify(seg.defect && seg.defect.defect_types),
+      String(seg.asr_detected_language || "").trim(),
+      seg.shot_size || "",
     ];
     const seen = new Set();
     for (const k of groups) {
@@ -596,15 +948,11 @@ function renderSegments() {
       chips.appendChild(chip);
     }
 
-    const asr = document.createElement("div");
-    asr.className = "muted";
-    asr.style.marginTop = "8px";
-    asr.textContent = seg.asr_text ? `ASR: ${seg.asr_text}` : "ASR: (空)";
-
     card.appendChild(row);
     card.appendChild(sum);
+    card.appendChild(visualMeta);
+    card.appendChild(audioMeta);
     if (chips.children.length) card.appendChild(chips);
-    card.appendChild(asr);
 
     const timelineRows = Array.isArray(seg.keyword_timeline) ? seg.keyword_timeline : [];
     if (timelineRows.length) {
@@ -623,6 +971,24 @@ function renderSegments() {
         tl.appendChild(t);
       }
       if (tl.children.length) card.appendChild(tl);
+    }
+
+    if (soundEvents.length) {
+      const stl = document.createElement("div");
+      stl.className = "timeline";
+      for (const item of soundEvents.slice(0, 20)) {
+        const start = Number(item.global_start_s || 0);
+        const end = Number(item.global_end_s || start);
+        const eventType = String(item.event_type || "").trim();
+        if (!eventType) continue;
+        const t = document.createElement("span");
+        t.className = "timechip";
+        t.innerHTML = `<strong>${escapeHtml(eventType)}</strong> @ ${fmtSec(start)}-${fmtSec(end)}`;
+        t.title = "点击跳转到声音事件时间戳";
+        t.onclick = () => seek(start);
+        stl.appendChild(t);
+      }
+      if (stl.children.length) audioMeta.appendChild(stl);
     }
 
     if (seg.frame_urls && seg.frame_urls.length) {
@@ -652,6 +1018,22 @@ function renderSearchResults(results, query) {
 
   searchInfo.textContent = `“${query}” 命中 ${results.length} 段`;
   for (const r of results) {
+    const defectInfo = formatDefect(r);
+    const sceneText = listify(r.scene).join(" / ");
+    const subjectText = listify(r.subjects).join(" / ");
+    const shotSizeText = String(r.shot_size || "未知 | unknown");
+    const movementText = listify(r.camera_movements).join(" / ");
+    const emotionText = listify(r.emotion_tags).join(" / ");
+    const asrLangText = String(r.asr_detected_language || "(空)").trim();
+    const musicRatio = Number(r.audio_music_ratio || 0);
+    const hasMusic = Boolean(r.audio_has_music);
+    const musicText = `${hasMusic ? "是" : "否"} (${(Math.max(0, musicRatio) * 100).toFixed(1)}%)`;
+    const soundEvents = normalizeSoundEvents(r.sound_events);
+    const soundEventText = soundEvents.length
+      ? dedupStrings(soundEvents.map((x) => x.event_type)).join(" / ")
+      : "(无)";
+    const asrBi = String(r.asr_text_bilingual || "").trim();
+
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = `
@@ -667,8 +1049,69 @@ function renderSearchResults(results, query) {
       </div>
       <div class="muted" style="margin-top:6px;">${r.hit_type === "keyword_timeline" ? `关键词命中: ${escapeHtml(r.matched_keyword || "")}` : "分段命中"}</div>
       <div style="margin-top:8px;">${escapeHtml(r.summary || "")}</div>
+      <div class="meta-grid">
+        <div class="meta-line"><span class="meta-label">场景</span><span>${escapeHtml(sceneText || "(空)")}</span></div>
+        <div class="meta-line"><span class="meta-label">主体</span><span>${escapeHtml(subjectText || "(空)")}</span></div>
+        <div class="meta-line"><span class="meta-label">镜头景别</span><span>${escapeHtml(shotSizeText)}</span></div>
+        <div class="meta-line"><span class="meta-label">镜头运动</span><span>${escapeHtml(movementText || "(空)")}</span></div>
+        <div class="meta-line"><span class="meta-label">情绪</span><span>${escapeHtml(emotionText || "(空)")}</span></div>
+        <div class="meta-line"><span class="meta-label">缺陷</span><span class="${defectInfo.className}">${escapeHtml(defectInfo.text)}</span></div>
+      </div>
+      <div class="meta-block">
+        <div class="meta-title">声音分析</div>
+        <div class="meta-grid" style="margin-top:0;">
+          <div class="meta-line"><span class="meta-label">ASR双语</span><span>${escapeHtml(asrBi || "(空)")}</span></div>
+          <div class="meta-line"><span class="meta-label">ASR语种</span><span>${escapeHtml(asrLangText || "(空)")}</span></div>
+          <div class="meta-line"><span class="meta-label">音乐检测</span><span>${escapeHtml(musicText)}</span></div>
+          <div class="meta-line"><span class="meta-label">声音事件</span><span>${escapeHtml(soundEventText)}</span></div>
+        </div>
+      </div>
     `;
     card.querySelector("button").onclick = () => seek(r.global_start_s || 0);
+
+    const chips = document.createElement("div");
+    chips.className = "chips";
+    const chipTerms = dedupStrings([
+      ...listify(r.events),
+      ...listify(r.objects),
+      ...listify(r.actions),
+      ...listify(r.scene),
+      ...listify(r.subjects),
+      ...listify(r.camera_movements),
+      ...listify(r.emotion_tags),
+      ...soundEvents.map((x) => x.event_type),
+      ...listify(r.defect && r.defect.defect_types),
+      String(r.asr_detected_language || "").trim(),
+      String(r.shot_size || "").trim(),
+    ]);
+    for (const key of chipTerms) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = key;
+      chip.title = "点击定位该关键词";
+      chip.onclick = () => triggerQuery(key);
+      chips.appendChild(chip);
+    }
+    if (chips.children.length) card.appendChild(chips);
+
+    if (soundEvents.length) {
+      const audioBlock = card.querySelector(".meta-block");
+      const tl = document.createElement("div");
+      tl.className = "timeline";
+      for (const item of soundEvents.slice(0, 12)) {
+        const start = Number(item.global_start_s || 0);
+        const end = Number(item.global_end_s || start);
+        const eventType = String(item.event_type || "").trim();
+        if (!eventType) continue;
+        const chip = document.createElement("span");
+        chip.className = "timechip";
+        chip.innerHTML = `<strong>${escapeHtml(eventType)}</strong> @ ${fmtSec(start)}-${fmtSec(end)}`;
+        chip.onclick = () => seek(start);
+        tl.appendChild(chip);
+      }
+      if (tl.children.length && audioBlock) audioBlock.appendChild(tl);
+    }
+
     resultList.appendChild(card);
   }
 }
@@ -718,6 +1161,18 @@ function renderGlobalKeywords() {
   }
 }
 
+function refreshWithFilters() {
+  const filteredResults = state.lastResults.filter(passFilters);
+  state.hitIds = new Set(filteredResults.map((x) => x.segment_id));
+  renderSegments();
+  if (state.lastQuery) {
+    renderSearchResults(filteredResults, state.lastQuery);
+  } else {
+    resultList.innerHTML = '<div class="muted">在上方输入文本进行定位。</div>';
+  }
+  return filteredResults;
+}
+
 function doSearch() {
   if (!state.indexObj) {
     searchInfo.textContent = "请先加载 index.json";
@@ -727,18 +1182,20 @@ function doSearch() {
   if (!query) return;
 
   const { results, normalizedQuery, terms } = searchSegments(state.indexObj, query, 30);
-  state.hitIds = new Set(results.map((x) => x.segment_id));
-  renderSegments();
-  renderSearchResults(results, query);
+  state.lastQuery = query;
+  state.lastResults = Array.isArray(results) ? results : [];
+  const filteredResults = refreshWithFilters();
 
   updateSearchDebug(
-    `query=${query} | normalized=${normalizedQuery || ""} | terms=${terms.join(",")} | count=${results.length}`
+    `query=${query} | normalized=${normalizedQuery || ""} | terms=${terms.join(",")} | count=${results.length} | filtered=${filteredResults.length}`
   );
 }
 
 function resetSearch() {
   queryInput.value = "";
   state.hitIds = new Set();
+  state.lastQuery = "";
+  state.lastResults = [];
   renderSegments();
   renderGlobalKeywords();
   resultList.innerHTML = '<div class="muted">在上方输入文本进行定位。</div>';
@@ -748,6 +1205,10 @@ function resetSearch() {
 
 function refreshAfterIndexLoaded() {
   state.bundle = buildBundle(state.indexObj);
+  state.hitIds = new Set();
+  state.lastQuery = "";
+  state.lastResults = [];
+  setupTaxonomyFilters();
   const v = state.bundle.video || {};
   const segCount = (state.bundle.segments || []).length;
   metaLine.textContent = `${v.video_id || "-"} | ${fmtSec(v.duration_s || 0)} | segments=${segCount} | ${state.bundle.index_path}`;
@@ -765,6 +1226,7 @@ function refreshAfterIndexLoaded() {
     videoSourceInfo.textContent = "未自动解析到视频源，请上传本地视频或粘贴视频链接";
   }
 
+  markIndexReady(true);
   setStatus(`index.json 已加载，共 ${segCount} 个分段`);
 }
 
@@ -866,8 +1328,55 @@ document.getElementById("useVideoUrlBtn").onclick = () => {
   const raw = document.getElementById("videoUrlInput").value.trim();
   useVideoUrl(raw);
 };
+if (toggleDataSourceBtn && dataSourceBlock) {
+  toggleDataSourceBtn.onclick = () => {
+    const collapsed = !dataSourceBlock.classList.contains("collapsed");
+    setBlockCollapsed(dataSourceBlock, toggleDataSourceBtn, collapsed);
+  };
+}
+if (toggleVideoSourceBtn && videoSourceBlock) {
+  toggleVideoSourceBtn.onclick = () => {
+    const collapsed = !videoSourceBlock.classList.contains("collapsed");
+    setBlockCollapsed(videoSourceBlock, toggleVideoSourceBtn, collapsed);
+  };
+}
+if (toggleSourcePanelBtn) {
+  toggleSourcePanelBtn.onclick = () => {
+    setSourcePanelCollapsed(!state.ui.sourcePanelCollapsed);
+  };
+}
 document.getElementById("searchBtn").onclick = doSearch;
 document.getElementById("resetBtn").onclick = resetSearch;
+if (shotSizeFilter) {
+  shotSizeFilter.addEventListener("change", () => {
+    state.filters.shot_size = shotSizeFilter.value || "";
+    refreshWithFilters();
+  });
+}
+if (cameraMovementFilter) {
+  cameraMovementFilter.addEventListener("change", () => {
+    state.filters.camera_movement = cameraMovementFilter.value || "";
+    refreshWithFilters();
+  });
+}
+if (defectFilter) {
+  defectFilter.addEventListener("change", () => {
+    state.filters.defect = defectFilter.value || "all";
+    refreshWithFilters();
+  });
+}
+const clearFilterBtn = document.getElementById("clearFilterBtn");
+if (clearFilterBtn) {
+  clearFilterBtn.onclick = () => {
+    state.filters.shot_size = "";
+    state.filters.camera_movement = "";
+    state.filters.defect = "all";
+    if (shotSizeFilter) shotSizeFilter.value = "";
+    if (cameraMovementFilter) cameraMovementFilter.value = "";
+    if (defectFilter) defectFilter.value = "all";
+    refreshWithFilters();
+  };
+}
 
 queryInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") doSearch();
@@ -879,8 +1388,13 @@ player.addEventListener("error", () => {
 });
 
 setStatus("等待加载 index.json");
+updateSourceQuickState();
+setBlockCollapsed(dataSourceBlock, toggleDataSourceBtn, false);
+setBlockCollapsed(videoSourceBlock, toggleVideoSourceBtn, false);
+setSourcePanelCollapsed(false);
 metaLine.textContent = "请先加载 index.json";
 resultList.innerHTML = '<div class="muted">在上方输入文本进行定位。</div>';
 globalKeywordList.innerHTML = '<div class="muted">无全局关键词时间索引</div>';
+if (filterInfo) filterInfo.textContent = "分段筛选：0/0";
 clearVideoAction();
 switchPlayer("none");
