@@ -559,6 +559,19 @@ function segmentText(seg) {
   return parts.join("\n").toLowerCase();
 }
 
+function getHighlightMetaForSegment(seg, bundleSegmentsById) {
+  const segId = String((seg && seg.segment_id) || "").trim();
+  const bundleSeg = segId && bundleSegmentsById instanceof Map ? bundleSegmentsById.get(segId) : null;
+  const source = bundleSeg || seg || {};
+  const highlightWindows = Array.isArray(source.highlight_windows) ? source.highlight_windows : [];
+  const primaryHighlight = source.primary_highlight && typeof source.primary_highlight === "object" ? source.primary_highlight : null;
+  return {
+    highlight_windows: highlightWindows,
+    primary_highlight: primaryHighlight,
+    highlight_count: Number(source.highlight_count || highlightWindows.length || 0),
+  };
+}
+
 function searchSegments(indexObj, query, topK) {
   const q = String(query || "").trim().toLowerCase();
   const qNorm = normalizeQueryText(q);
@@ -570,8 +583,12 @@ function searchSegments(indexObj, query, topK) {
   if (!terms.length) terms = [qNorm || q];
   terms = expandTerms(terms);
 
+  const bundleSegmentsById = new Map(
+    (((state.bundle && state.bundle.segments) || []).map((item) => [String((item && item.segment_id) || "").trim(), item]))
+  );
   const out = [];
   for (const seg of indexObj.segments || []) {
+    const highlightMeta = getHighlightMetaForSegment(seg, bundleSegmentsById);
     const text = segmentText(seg);
     const textNorm = normalizeQueryText(text);
 
@@ -617,6 +634,9 @@ function searchSegments(indexObj, query, topK) {
         hit_type: "segment",
         matched_keyword: "",
         evidence_times_s: [],
+        highlight_windows: highlightMeta.highlight_windows,
+        primary_highlight: highlightMeta.primary_highlight,
+        highlight_count: highlightMeta.highlight_count,
       });
     }
 
@@ -667,6 +687,9 @@ function searchSegments(indexObj, query, topK) {
         hit_type: "keyword_timeline",
         matched_keyword: kw.keyword || "",
         evidence_times_s: kw.evidence_times_s || [],
+        highlight_windows: highlightMeta.highlight_windows,
+        primary_highlight: highlightMeta.primary_highlight,
+        highlight_count: highlightMeta.highlight_count,
       });
     }
   }
@@ -695,7 +718,7 @@ function triggerQuery(qv) {
   doSearch();
 }
 
-function resolveFrameUrl(fp) {
+function resolveAssetUrl(fp) {
   const raw = String(fp || "").trim();
   if (!raw) return "";
 
@@ -718,6 +741,10 @@ function resolveFrameUrl(fp) {
   }
 
   return "";
+}
+
+function resolveFrameUrl(fp) {
+  return resolveAssetUrl(fp);
 }
 
 function resolveMetaVideoPath(video) {
@@ -752,6 +779,137 @@ function resolveMetaVideoPath(video) {
   return "";
 }
 
+function getHighlightFallbackVideoUrl() {
+  if (state.playerMode === "html5") {
+    return String(player.currentSrc || player.src || "").trim();
+  }
+  if (state.bundle && state.bundle.video) {
+    return String(resolveMetaVideoPath(state.bundle.video) || "").trim();
+  }
+  return "";
+}
+
+function resolveHighlightPreviewSource(item) {
+  if (!item || typeof item !== "object") return null;
+
+  const clipUrl = String(item.clip_url || "").trim();
+  const duration = Math.max(
+    0.1,
+    Number(item.duration_s || (Number(item.global_end_s || 0) - Number(item.global_start_s || 0)) || 0)
+  );
+
+  if (clipUrl) {
+    return {
+      url: clipUrl,
+      trimStart: 0,
+      trimEnd: duration,
+      sourceLabel: "高光 clip",
+      windowed: false,
+    };
+  }
+
+  const fallbackUrl = getHighlightFallbackVideoUrl();
+  if (!fallbackUrl) return null;
+
+  return {
+    url: fallbackUrl,
+    trimStart: Math.max(0, Number(item.global_start_s || 0)),
+    trimEnd: Math.max(0.1, Number(item.global_end_s || item.global_start_s || 0)),
+    sourceLabel: "主视频裁切预览",
+    windowed: true,
+  };
+}
+
+function bindHighlightPreview(videoEl, preview) {
+  if (!videoEl || !preview || !preview.url) return;
+
+  const trimStart = Math.max(0, Number(preview.trimStart) || 0);
+  const rawTrimEnd = Number(preview.trimEnd);
+  const trimEnd = Number.isFinite(rawTrimEnd) ? Math.max(trimStart + 0.05, rawTrimEnd) : trimStart + 3;
+
+  videoEl.src = preview.url;
+  videoEl.preload = "metadata";
+  videoEl.autoplay = true;
+  videoEl.defaultMuted = true;
+  videoEl.muted = true;
+  videoEl.loop = !preview.windowed;
+  videoEl.playsInline = true;
+  videoEl.setAttribute("autoplay", "");
+  videoEl.setAttribute("muted", "");
+  videoEl.setAttribute("playsinline", "");
+
+  if (!preview.windowed) {
+    const playClip = () => {
+      const task = videoEl.play();
+      if (task && typeof task.catch === "function") task.catch(() => {});
+    };
+    videoEl.addEventListener("loadedmetadata", playClip);
+    return;
+  }
+
+  const syncWindow = () => {
+    const mediaDuration = Number.isFinite(videoEl.duration) ? videoEl.duration : trimEnd;
+    const effectiveEnd = Math.max(trimStart + 0.05, Math.min(trimEnd, mediaDuration));
+    videoEl.dataset.trimStart = String(trimStart);
+    videoEl.dataset.trimEnd = String(effectiveEnd);
+    if (videoEl.currentTime < trimStart || videoEl.currentTime > effectiveEnd) {
+      videoEl.currentTime = trimStart;
+    }
+    const task = videoEl.play();
+    if (task && typeof task.catch === "function") task.catch(() => {});
+  };
+
+  videoEl.addEventListener("loadedmetadata", syncWindow);
+  videoEl.addEventListener("canplay", syncWindow);
+  videoEl.addEventListener("timeupdate", () => {
+    const start = Number(videoEl.dataset.trimStart || trimStart);
+    const end = Number(videoEl.dataset.trimEnd || trimEnd);
+    if (videoEl.currentTime >= end - 0.04) {
+      videoEl.currentTime = start;
+      if (videoEl.paused) {
+        const task = videoEl.play();
+        if (task && typeof task.catch === "function") task.catch(() => {});
+      }
+    }
+  });
+  videoEl.addEventListener("ended", () => {
+    videoEl.currentTime = trimStart;
+    const task = videoEl.play();
+    if (task && typeof task.catch === "function") task.catch(() => {});
+  });
+}
+
+function normalizeHighlightWindow(row, seg, fallbackProvider) {
+  if (!row || typeof row !== "object") return null;
+  const segGlobalStart = Number((seg && seg.global_start_s) || 0);
+  const globalStart = Number(row.global_start_s ?? row.start_s ?? segGlobalStart);
+  const globalEnd = Number(row.global_end_s ?? row.end_s ?? globalStart);
+  const localStart = Number.isFinite(Number(row.local_start_s))
+    ? Number(row.local_start_s)
+    : Math.max(0, globalStart - segGlobalStart);
+  const localEnd = Number.isFinite(Number(row.local_end_s))
+    ? Number(row.local_end_s)
+    : Math.max(localStart, globalEnd - segGlobalStart);
+  const clipPath = String(row.clip_path || row.clip_url || "").trim();
+  return {
+    ...row,
+    provider: String(row.provider || fallbackProvider || "").trim(),
+    clip_path: clipPath,
+    clip_url: resolveAssetUrl(clipPath),
+    global_start_s: globalStart,
+    global_end_s: globalEnd,
+    start_s: globalStart,
+    end_s: globalEnd,
+    local_start_s: localStart,
+    local_end_s: localEnd,
+    duration_s: Math.max(0, Number((globalEnd - globalStart).toFixed(3))),
+    title: String(row.title || "").trim(),
+    reason: String(row.reason || "").trim(),
+    tags: listify(row.tags),
+    score: Math.max(0, Math.min(1, Number(row.score || 0))),
+  };
+}
+
 function buildKeywordIndex(indexObj) {
   if (Array.isArray(indexObj.keyword_index) && indexObj.keyword_index.length) {
     return indexObj.keyword_index;
@@ -776,6 +934,20 @@ function buildKeywordIndex(indexObj) {
 function buildBundle(indexObj) {
   const video = indexObj.video || {};
   const taxonomies = (indexObj && typeof indexObj.taxonomies === "object" && indexObj.taxonomies) || {};
+  const modelHighlights =
+    (indexObj && typeof indexObj.model_highlights === "object" && indexObj.model_highlights) || {};
+  const fallbackProvider = String(modelHighlights.provider || "").trim();
+  const topWindowsBySegment = new Map();
+  const normalizedModelWindows = [];
+  for (const row of modelHighlights.windows || []) {
+    const item = normalizeHighlightWindow(row, null, fallbackProvider);
+    if (!item) continue;
+    normalizedModelWindows.push(item);
+    const segId = String(item.segment_id || "").trim();
+    if (!segId) continue;
+    if (!topWindowsBySegment.has(segId)) topWindowsBySegment.set(segId, []);
+    topWindowsBySegment.get(segId).push(item);
+  }
   const segments = (indexObj.segments || []).map((seg) => {
     const defectRaw = seg.defect;
     let defectTypes = [];
@@ -786,6 +958,34 @@ function buildBundle(indexObj) {
     }
     if (defectTypes.length && !hasDefect) hasDefect = true;
     if (!hasDefect) defectTypes = [];
+
+    const segId = String(seg.segment_id || "").trim();
+    const rawHighlightWindows =
+      (Array.isArray(seg.highlight_windows) && seg.highlight_windows.length
+        ? seg.highlight_windows
+        : topWindowsBySegment.get(segId)) || [];
+    const highlightWindows = rawHighlightWindows
+      .map((row) => normalizeHighlightWindow(row, seg, fallbackProvider))
+      .filter(Boolean)
+      .sort((a, b) => {
+        const ds = Number(a.global_start_s || 0) - Number(b.global_start_s || 0);
+        if (ds !== 0) return ds;
+        return String(a.window_id || "").localeCompare(String(b.window_id || ""));
+      });
+    let primaryHighlight = normalizeHighlightWindow(seg.primary_highlight, seg, fallbackProvider);
+    if (!primaryHighlight && highlightWindows.length) primaryHighlight = highlightWindows[0];
+    if (
+      primaryHighlight &&
+      !highlightWindows.some((item) => {
+        if (primaryHighlight.window_id && item.window_id) return item.window_id === primaryHighlight.window_id;
+        return (
+          Number(item.global_start_s || 0) === Number(primaryHighlight.global_start_s || 0) &&
+          Number(item.global_end_s || 0) === Number(primaryHighlight.global_end_s || 0)
+        );
+      })
+    ) {
+      highlightWindows.unshift(primaryHighlight);
+    }
 
     return {
       segment_id: seg.segment_id,
@@ -821,6 +1021,9 @@ function buildBundle(indexObj) {
       frame_urls: listify(seg.frame_paths).map(resolveFrameUrl).filter(Boolean),
       keyword_timeline: seg.keyword_timeline || [],
       tokens: seg.tokens || [],
+      highlight_windows: highlightWindows,
+      primary_highlight: primaryHighlight,
+      highlight_count: highlightWindows.length,
     };
   });
 
@@ -835,9 +1038,154 @@ function buildBundle(indexObj) {
       camera_movements: listify(taxonomies.camera_movements || taxonomies.camera_movement),
       sound_events: listify(taxonomies.sound_events),
     },
+    model_highlights: {
+      ...modelHighlights,
+      provider: fallbackProvider,
+      windows: normalizedModelWindows,
+    },
+    rmdb_highlights:
+      (indexObj && typeof indexObj.rmdb_highlights === "object" && indexObj.rmdb_highlights) || {},
+    gemini_highlights:
+      (indexObj && typeof indexObj.gemini_highlights === "object" && indexObj.gemini_highlights) || {},
     segments,
     keyword_index: buildKeywordIndex(indexObj),
   };
+}
+
+function formatHighlightProvider(provider) {
+  return String(provider || "").trim().replaceAll("_", " ").replaceAll("-", " ");
+}
+
+function renderHighlightItem(item, index) {
+  if (!item || typeof item !== "object") return null;
+
+  const card = document.createElement("div");
+  card.className = `highlight-item${index === 0 ? " primary" : ""}`;
+
+  const preview = resolveHighlightPreviewSource(item);
+  const media = document.createElement("div");
+  media.className = "highlight-media";
+  if (preview) {
+    const videoEl = document.createElement("video");
+    videoEl.className = "highlight-video";
+    videoEl.controls = true;
+    bindHighlightPreview(videoEl, preview);
+    media.appendChild(videoEl);
+
+    const note = document.createElement("div");
+    note.className = "highlight-source-note";
+    note.textContent = preview.sourceLabel;
+    media.appendChild(note);
+  } else {
+    media.innerHTML = '<div class="highlight-empty">未找到高光 clip；可先绑定资源目录或设置可直接播放的视频源</div>';
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "highlight-meta";
+
+  const duration = Number(
+    item.duration_s || (Number(item.global_end_s || 0) - Number(item.global_start_s || 0)) || 0
+  );
+  const score = Number(item.score || 0);
+  const title = String(item.title || "").trim() || `高光 ${index + 1}`;
+  const badges = [];
+  if (duration > 0) badges.push(`<span class="highlight-badge">${duration.toFixed(1)}s</span>`);
+  if (score > 0) badges.push(`<span class="highlight-badge">score ${score.toFixed(2)}</span>`);
+
+  meta.innerHTML = `
+    <div class="highlight-item-head">
+      <div class="highlight-item-title">${escapeHtml(title)}</div>
+      <div class="highlight-head-side">${badges.join("")}</div>
+    </div>
+    <div class="meta-line"><span class="meta-label">全局时间</span><span>${fmtSec(item.global_start_s)} - ${fmtSec(item.global_end_s)}</span></div>
+    <div class="meta-line"><span class="meta-label">片段内</span><span>${fmtSec(item.local_start_s)} - ${fmtSec(item.local_end_s)}</span></div>
+    ${item.reason ? `<div class="meta-line"><span class="meta-label">原因</span><span>${escapeHtml(item.reason)}</span></div>` : ""}
+  `;
+
+  const tags = listify(item.tags);
+  if (tags.length) {
+    const tagRow = document.createElement("div");
+    tagRow.className = "chips";
+    for (const tag of tags.slice(0, 8)) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = tag;
+      chip.title = "点击定位该关键词";
+      chip.onclick = () => triggerQuery(tag);
+      tagRow.appendChild(chip);
+    }
+    if (tagRow.children.length) meta.appendChild(tagRow);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "highlight-actions";
+  const jumpBtn = document.createElement("button");
+  jumpBtn.className = "small-btn";
+  jumpBtn.textContent = "跳到高光";
+  jumpBtn.onclick = () => seek(item.global_start_s || 0);
+  actions.appendChild(jumpBtn);
+  meta.appendChild(actions);
+
+  card.appendChild(media);
+  card.appendChild(meta);
+  return card;
+}
+
+function renderHighlightPanel(seg) {
+  const fallbackProvider = String(
+    (seg && seg.primary_highlight && seg.primary_highlight.provider) ||
+      (state.bundle && state.bundle.model_highlights && state.bundle.model_highlights.provider) ||
+      ""
+  ).trim();
+  const rawRows = Array.isArray(seg && seg.highlight_windows)
+    ? seg.highlight_windows
+        .map((item) => normalizeHighlightWindow(item, seg, fallbackProvider))
+        .filter((item) => item && typeof item === "object")
+    : [];
+  const primary =
+    seg && seg.primary_highlight && typeof seg.primary_highlight === "object"
+      ? normalizeHighlightWindow(seg.primary_highlight, seg, fallbackProvider)
+      : rawRows[0] || null;
+  const rows = [];
+  const seen = new Set();
+  for (const item of primary ? [primary, ...rawRows] : rawRows) {
+    if (!item) continue;
+    const key =
+      String(item.window_id || "").trim() ||
+      `${Number(item.global_start_s || 0).toFixed(3)}-${Number(item.global_end_s || 0).toFixed(3)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(item);
+  }
+  if (!rows.length) return null;
+
+  const provider = formatHighlightProvider(
+    (primary || rows[0]).provider ||
+      fallbackProvider
+  );
+  const panel = document.createElement("div");
+  panel.className = "highlight-panel";
+
+  const headBadges = [];
+  if (provider) headBadges.push(`<span class="highlight-badge">${escapeHtml(provider)}</span>`);
+  headBadges.push(`<span class="highlight-count">共 ${rows.length} 个高光窗口</span>`);
+
+  panel.innerHTML = `
+    <div class="highlight-head">
+      <div class="meta-title">模型高光</div>
+      <div class="highlight-head-side">${headBadges.join("")}</div>
+    </div>
+  `;
+
+  const stack = document.createElement("div");
+  stack.className = "highlight-stack";
+  for (const [index, item] of rows.entries()) {
+    const card = renderHighlightItem(item, index);
+    if (card) stack.appendChild(card);
+  }
+  panel.appendChild(stack);
+
+  return panel;
 }
 
 function renderSegments() {
@@ -952,6 +1300,8 @@ function renderSegments() {
     card.appendChild(sum);
     card.appendChild(visualMeta);
     card.appendChild(audioMeta);
+    const highlightPanel = renderHighlightPanel(seg);
+    if (highlightPanel) card.appendChild(highlightPanel);
     if (chips.children.length) card.appendChild(chips);
 
     const timelineRows = Array.isArray(seg.keyword_timeline) ? seg.keyword_timeline : [];
@@ -989,19 +1339,6 @@ function renderSegments() {
         stl.appendChild(t);
       }
       if (stl.children.length) audioMeta.appendChild(stl);
-    }
-
-    if (seg.frame_urls && seg.frame_urls.length) {
-      const frames = document.createElement("div");
-      frames.className = "frames";
-      for (const u of seg.frame_urls.slice(0, 6)) {
-        const img = document.createElement("img");
-        img.src = u;
-        img.loading = "lazy";
-        img.onclick = () => seek(seg.global_start_s || 0);
-        frames.appendChild(img);
-      }
-      card.appendChild(frames);
     }
 
     segmentList.appendChild(card);
@@ -1112,6 +1449,8 @@ function renderSearchResults(results, query) {
       if (tl.children.length && audioBlock) audioBlock.appendChild(tl);
     }
 
+    const highlightPanel = renderHighlightPanel(r);
+    if (highlightPanel) card.appendChild(highlightPanel);
     resultList.appendChild(card);
   }
 }

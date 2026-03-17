@@ -435,16 +435,129 @@ button.secondary {
   font-size: 12px;
 }
 
-.frames { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
+.highlight-panel {
+  margin-top: 8px;
+  border: 1px solid #d9e7dd;
+  border-radius: 10px;
+  padding: 8px;
+  background: linear-gradient(180deg, #fbfefc 0%, #f4faf6 100%);
+}
 
-.frames img {
-  width: 108px;
-  height: 61px;
-  object-fit: cover;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  cursor: pointer;
-  flex: 0 0 auto;
+.highlight-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.highlight-head-side {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.highlight-badge,
+.highlight-count {
+  font-size: 11px;
+  line-height: 1.2;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid #cfe0d4;
+  background: #edf6ef;
+  color: #244231;
+}
+
+.highlight-layout {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: minmax(168px, 220px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.highlight-stack {
+  margin-top: 8px;
+  display: grid;
+  gap: 10px;
+}
+
+.highlight-item {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid #d7e5db;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.highlight-item.primary {
+  border-color: #bfd7c5;
+  box-shadow: inset 0 0 0 1px rgba(191, 215, 197, 0.35);
+}
+
+.highlight-media {
+  min-width: 0;
+}
+
+.highlight-video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 110px;
+  border-radius: 10px;
+  border: 1px solid #d0ddd4;
+  background: #000;
+}
+
+.highlight-source-note {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #5f6f64;
+}
+
+.highlight-empty {
+  min-height: 110px;
+  border-radius: 10px;
+  border: 1px dashed #c9dacf;
+  background: #f7fbf8;
+  color: #5a6c60;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 10px;
+}
+
+.highlight-meta {
+  min-width: 0;
+}
+
+.highlight-item-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.highlight-item-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1d3828;
+}
+
+.highlight-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.highlight-panel .timeline {
+  margin-top: 10px;
 }
 
 #segmentList,
@@ -513,5 +626,13 @@ button.secondary {
 
   .filterbar {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .highlight-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .highlight-item {
+    grid-template-columns: 1fr;
   }
 }
